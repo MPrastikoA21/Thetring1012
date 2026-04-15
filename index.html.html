@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulasi Hotspot / Tethering - Marcel Arthana</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        :root { --accent: #ff4757; --bg: #1e272e; }
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; background: var(--bg); color: white; display: flex; }
+        #canvas-container { flex-grow: 1; height: 100vh; cursor: grab; }
+        #canvas-container:active { cursor: grabbing; }
+        
+        #ui-panel {
+            width: 450px; height: 100vh; background: rgba(30, 39, 46, 0.95);
+            padding: 30px; box-shadow: -10px 0 30px rgba(0,0,0,0.8);
+            overflow-y: auto; border-left: 3px solid var(--accent);
+            z-index: 10;
+        }
+
+        .materi-box {
+            background: rgba(255, 71, 87, 0.08); padding: 18px; border-radius: 10px;
+            margin-bottom: 20px; border-left: 4px solid var(--accent);
+        }
+
+        .control-btn {
+            width: 100%; padding: 12px; background: var(--accent); border: none;
+            color: #fff; font-weight: bold; border-radius: 6px; cursor: pointer; margin: 8px 0;
+            transition: 0.3s;
+        }
+
+        .control-btn:hover { background: #ff6b81; transform: scale(1.02); }
+
+        h2 { color: var(--accent); margin-bottom: 15px; }
+        p { line-height: 1.6; color: #d2dae2; font-size: 0.95rem; }
+
+        #loader {
+            position: fixed; inset: 0; background: var(--bg); z-index: 1000;
+            display: flex; justify-content: center; align-items: center; flex-direction: column;
+        }
+    </style>
+</head>
+<body>
+
+<div id="loader">
+    <h2 style="color: var(--accent);">Menginisialisasi Perangkat...</h2>
+    <p>Merakit 3D Mesh & Sinyal Nirkabel</p>
+</div>
+
+<div id="canvas-container"></div>
+
+<aside id="ui-panel">
+    <h2>Simulasi Tethering (Hotspot)</h2>
+    <p>Konsep berbagi koneksi internet seluler dari satu perangkat ke perangkat lain, membentuk sebuah <strong>Personal Area Network (PAN)</strong>.</p>
+
+    <div class="materi-box">
+        <h3>1. Koneksi Uplink (Seluler)</h3>
+        <p>Perhatikan jalur data berkedip dari <strong>Menara BTS</strong> ke <strong>Smartphone</strong>. Ini adalah kuota data seluler (4G/5G) dari provider ISP.</p>
+    </div>
+
+    <div class="materi-box">
+        <h3>2. Gelombang Hotspot (Wi-Fi)</h3>
+        <p>Smartphone bertindak sebagai <em>Router Mini</em>. Cincin merah yang memancar merepresentasikan sinyal radio (Wi-Fi Tethering) yang disebarkan ke sekitarnya.</p>
+    </div>
+
+    <div class="materi-box">
+        <h3>3. Pengguna & Client Devices</h3>
+        <p>Pengguna di sekitar jangkauan (radius pendek) dapat menghubungkan Laptop atau Tablet mereka untuk mendapatkan akses internet secara bersamaan.</p>
+    </div>
+
+    <button class="control-btn" onclick="focusDevice('phone')">Lihat Smartphone</button>
+    <button class="control-btn" onclick="focusDevice('users')">Lihat Pengguna</button>
+    <button class="control-btn" onclick="focusDevice('bts')">Lihat Menara BTS</button>
+    <button class="control-btn" onclick="resetView()">Tampilan Keseluruhan</button>
+    <button class="control-btn" onclick=""></button>
+</aside>
+
+<script>
+    let scene, camera, renderer, controls, clock;
+    let packets = [];
+    let wifiRings = [];
+
+    function init() {
+        scene = new THREE.Scene();
+        clock = new THREE.Clock();
+        
+        camera = new THREE.PerspectiveCamera(50, (window.innerWidth - 450) / window.innerHeight, 0.1, 1000);
+        camera.position.set(12, 10, 15);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth - 450, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        // Lighting yang lebih sinematik
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        dirLight.position.set(5, 15, 5);
+        scene.add(dirLight);
+        scene.add(new THREE.AmbientLight(0x404040, 1.5));
+        
+        // Spotlight ke arah meja untuk menonjolkan perangkat
+        const spotLight = new THREE.SpotLight(0xffffff, 1);
+        spotLight.position.set(0, 15, 0);
+        spotLight.angle = Math.PI / 6;
+        spotLight.penumbra = 0.5;
+        scene.add(spotLight);
+
+        buildEnvironment();
+        
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.maxPolarAngle = Math.PI / 2 - 0.05; // Jangan sampai tembus ke bawah meja
+
+        document.getElementById('loader').style.display = 'none';
+        animate();
+    }
+
+    function createLabel(text, scaleModifier = 1) {
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        context.font = "Bold 22px 'Segoe UI', sans-serif";
+        const textWidth = context.measureText(text).width;
+        canvas.width = textWidth + 30;
+        canvas.height = 40;
+
+        context.fillStyle = "rgba(30, 39, 46, 0.85)";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+
+        context.strokeStyle = "#ff4757";
+        context.lineWidth = 3;
+        context.strokeRect(0, 0, canvas.width, canvas.height);
+
+        context.fillStyle = "#ffffff";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
+        const sprite = new THREE.Sprite(spriteMaterial);
+        sprite.scale.set(canvas.width * 0.03 * scaleModifier, canvas.height * 0.03 * scaleModifier, 1);
+        return sprite;
+    }
+
+    // FUNGSI BARU: Merakit karakter manusia sederhana 3D
+    function createPerson(shirtColor, labelText) {
+        const personGroup = new THREE.Group();
+
+        // Material
+        const skinMat = new THREE.MeshPhongMaterial({ color: 0xffccaa }); // Warna kulit
+        const shirtMat = new THREE.MeshPhongMaterial({ color: shirtColor });
+        const pantsMat = new THREE.MeshPhongMaterial({ color: 0x2f3640 });
+
+        // Kepala
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 16), skinMat);
+        head.position.y = 3.2;
+        personGroup.add(head);
+
+        // Badan
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1.4, 16), shirtMat);
+        body.position.y = 2.0;
+        personGroup.add(body);
+
+        // Kaki Kiri & Kanan
+        const legGeo = new THREE.BoxGeometry(0.35, 1.3, 0.35);
+        const legL = new THREE.Mesh(legGeo, pantsMat);
+        legL.position.set(-0.25, 0.65, 0);
+        const legR = new THREE.Mesh(legGeo, pantsMat);
+        legR.position.set(0.25, 0.65, 0);
+        personGroup.add(legL);
+        personGroup.add(legR);
+
+        // Tangan Kiri & Kanan
+        const armGeo = new THREE.BoxGeometry(0.3, 1.2, 0.3);
+        const armL = new THREE.Mesh(armGeo, skinMat);
+        armL.position.set(-0.8, 2.0, 0);
+        armL.rotation.z = 0.2; // Agak miring
+        const armR = new THREE.Mesh(armGeo, skinMat);
+        armR.position.set(0.8, 2.0, 0);
+        armR.rotation.z = -0.2;
+        personGroup.add(armL);
+        personGroup.add(armR);
+
+        // Label Nama Pengguna
+        const label = createLabel(labelText, 0.6);
+        label.position.set(0, 4.2, 0);
+        personGroup.add(label);
+
+        return personGroup;
+    }
+
+    function buildEnvironment() {
+        // Lantai/Meja Kayu (Tempat perangkat diletakkan)
+        const deskGeo = new THREE.PlaneGeometry(40, 40);
+        const deskMat = new THREE.MeshPhongMaterial({ color: 0x3d3d3d });
+        const desk = new THREE.Mesh(deskGeo, deskMat);
+        desk.rotation.x = -Math.PI / 2;
+        scene.add(desk);
+
+        // 1. Membuat Menara BTS (Jauh di latar belakang)
+        const btsGroup = new THREE.Group();
+        const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.5, 8, 8), new THREE.MeshPhongMaterial({color: 0x7f8fa6}));
+        mast.position.y = 4;
+        btsGroup.add(mast);
+        const dish = new THREE.Mesh(new THREE.SphereGeometry(0.6, 16, 16, 0, Math.PI), new THREE.MeshPhongMaterial({color: 0xf5f6fa}));
+        dish.position.set(0, 7, 0.3);
+        dish.rotation.x = Math.PI / 2;
+        btsGroup.add(dish);
+        
+        btsGroup.position.set(-10, 0, -10);
+        scene.add(btsGroup);
+
+        const btsLabel = createLabel("Menara BTS (ISP)", 1.2);
+        btsLabel.position.set(0, 9, 0);
+        btsGroup.add(btsLabel);
+
+        // 2. Membuat Smartphone (Hotspot Pusat)
+        const phoneGroup = new THREE.Group();
+        const phoneBody = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.15, 2.4), new THREE.MeshPhongMaterial({color: 0x2f3640}));
+        const phoneScreen = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 2.3), new THREE.MeshBasicMaterial({color: 0x0984e3}));
+        phoneScreen.rotation.x = -Math.PI / 2;
+        phoneScreen.position.y = 0.08;
+        phoneGroup.add(phoneBody);
+        phoneGroup.add(phoneScreen);
+
+        phoneGroup.position.set(0, 0.08, 0);
+        scene.add(phoneGroup);
+
+        const phoneLabel = createLabel("Smartphone (Hotspot Aktif)", 0.8);
+        phoneLabel.position.set(0, 2, 0);
+        phoneGroup.add(phoneLabel);
+
+        // 3. Membuat Laptop (Client 1)
+        const laptopGroup = new THREE.Group();
+        const base = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 2.2), new THREE.MeshPhongMaterial({color: 0xdcdde1}));
+        const keyboard = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 1.2), new THREE.MeshBasicMaterial({color: 0x1e272e}));
+        keyboard.rotation.x = -Math.PI / 2;
+        keyboard.position.y = 0.11;
+        keyboard.position.z = -0.2;
+        base.add(keyboard);
+        
+        const monitor = new THREE.Mesh(new THREE.BoxGeometry(3, 2, 0.15), new THREE.MeshPhongMaterial({color: 0xdcdde1}));
+        const laptopScreen = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 1.8), new THREE.MeshBasicMaterial({color: 0x000000}));
+        laptopScreen.position.z = 0.08;
+        monitor.add(laptopScreen);
+        
+        monitor.position.set(0, 1, -1.1);
+        monitor.rotation.x = -0.2; // Layar agak miring ke belakang
+        laptopGroup.add(base);
+        laptopGroup.add(monitor);
+
+        laptopGroup.position.set(6, 0.1, 2);
+        laptopGroup.rotation.y = -Math.PI / 4;
+        scene.add(laptopGroup);
+
+        const laptopLabel = createLabel("Laptop", 0.7);
+        laptopLabel.position.set(0, 2.8, 0);
+        laptopGroup.add(laptopLabel);
+
+        // --- TAMBAHAN: Orang 1 (Pengguna Laptop) ---
+        const person1 = createPerson(0x0984e3, "Pengguna 1"); // Baju Biru
+        person1.position.set(8, 0, 4); // Berdiri di dekat laptop
+        person1.lookAt(laptopGroup.position); // Menghadap ke arah laptop
+        scene.add(person1);
+
+        // 4. Membuat Tablet (Client 2)
+        const tabGroup = new THREE.Group();
+        const tabBody = new THREE.Mesh(new THREE.BoxGeometry(2, 0.15, 2.8), new THREE.MeshPhongMaterial({color: 0x353b48}));
+        const tabScreen = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 2.6), new THREE.MeshBasicMaterial({color: 0x22a6b3}));
+        tabScreen.rotation.x = -Math.PI / 2;
+        tabScreen.position.y = 0.08;
+        tabGroup.add(tabBody);
+        tabGroup.add(tabScreen);
+
+        tabGroup.position.set(-4, 0.08, 5);
+        tabGroup.rotation.y = Math.PI / 6;
+        scene.add(tabGroup);
+
+        const tabLabel = createLabel("Tablet", 0.7);
+        tabLabel.position.set(0, 1.5, 0);
+        tabGroup.add(tabLabel);
+
+        // --- TAMBAHAN: Orang 2 (Pengguna Tablet) ---
+        const person2 = createPerson(0xe1b12c, "Pengguna 2"); // Baju Kuning
+        person2.position.set(-5, 0, 8); // Berdiri di dekat tablet
+        person2.lookAt(tabGroup.position); // Menghadap ke arah tablet
+        scene.add(person2);
+
+        // SETUP ANIMASI DATA & SINYAL
+        createSignalRings(phoneGroup.position);
+        
+        // Rute Data: BTS -> Phone
+        createDataRoute(new THREE.Vector3(-10, 7, -10), phoneGroup.position, 0x00d2ff, true); 
+        // Rute Data: Phone -> Laptop
+        createDataRoute(phoneGroup.position, laptopGroup.position, 0xff4757, false);
+        // Rute Data: Phone -> Tablet
+        createDataRoute(phoneGroup.position, tabGroup.position, 0xff4757, false);
+    }
+
+    function createSignalRings(centerPos) {
+        for(let i = 0; i < 3; i++) {
+            const ringGeo = new THREE.RingGeometry(0.5, 0.6, 32);
+            const ringMat = new THREE.MeshBasicMaterial({ color: 0xff4757, transparent: true, opacity: 0, side: THREE.DoubleSide });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.rotation.x = -Math.PI / 2;
+            ring.position.copy(centerPos);
+            ring.position.y = 0.2; // Sedikit di atas meja
+            
+            scene.add(ring);
+            wifiRings.push({ mesh: ring, scale: i * 2, opacity: 1 });
+        }
+    }
+
+    function createDataRoute(start, end, color, isArc) {
+        const pGeo = new THREE.SphereGeometry(0.15, 8, 8);
+        const pMat = new THREE.MeshBasicMaterial({ color: color });
+        const mesh = new THREE.Mesh(pGeo, pMat);
+        scene.add(mesh);
+        
+        packets.push({
+            mesh: mesh,
+            start: start,
+            end: end,
+            progress: Math.random(),
+            isArc: isArc 
+        });
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const delta = clock.getDelta();
+
+        // 1. Animasi Cincin Sinyal Wi-Fi
+        wifiRings.forEach(ring => {
+            ring.scale += delta * 3;
+            ring.opacity -= delta * 0.4;
+            
+            if (ring.scale > 8) {
+                ring.scale = 0.5;
+                ring.opacity = 0.8;
+            }
+            
+            ring.mesh.scale.setScalar(ring.scale);
+            ring.mesh.material.opacity = Math.max(0, ring.opacity);
+        });
+
+        // 2. Animasi Paket Data
+        packets.forEach(p => {
+            p.progress += delta * 0.5;
+            if (p.progress > 1) p.progress = 0;
+
+            if (p.isArc) {
+                p.mesh.position.lerpVectors(p.start, p.end, p.progress);
+                p.mesh.position.y += Math.sin(p.progress * Math.PI) * 4; 
+            } else {
+                p.mesh.position.lerpVectors(p.start, p.end, p.progress);
+                p.mesh.position.y = 0.5; 
+            }
+        });
+
+        controls.update();
+        renderer.render(scene, camera);
+    }
+
+    // Navigasi UI
+    function focusDevice(type) {
+        if(type === 'phone') {
+            camera.position.set(0, 4, 5);
+            controls.target.set(0, 0, 0);
+        } else if(type === 'bts') {
+            camera.position.set(-15, 10, -5);
+            controls.target.set(-10, 5, -10);
+        } else if(type === 'users') {
+            camera.position.set(2, 6, 12);
+            controls.target.set(0, 0, 3);
+        }
+    }
+
+    function resetView() {
+        camera.position.set(12, 10, 15);
+        controls.target.set(0, 0, 0);
+    }
+
+    window.addEventListener('resize', () => {
+        camera.aspect = (window.innerWidth - 450) / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth - 450, window.innerHeight);
+    });
+
+    init();
+</script>
+</body>
+</html>
